@@ -1,0 +1,40 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Texture2D" path="res://art/sprites/frog.png" id="1"]
+[ext_resource type="Script" path="res://scripts/Frog.gd" id="2"]
+[ext_resource type="Script" path="res://scripts/Tongue.gd" id="3"]
+
+[sub_resource type="RectangleShape2D" id="1"]
+size = Vector2(16, 16)
+
+[node name="Frog" type="RigidBody2D"]
+script = ExtResource("2")
+gravity_scale = 1.0
+mass = 1.5
+linear_damp = 0.05
+angular_damp = 8.0
+collision_layer = 2
+collision_mask = 1
+position = Vector2(0, 0)
+
+[node name="Sprite" type="Sprite2D" parent="."]
+texture = ExtResource("1")
+centered = true
+position = Vector2(0, -8)
+scale = Vector2(0.03125, 0.03125)
+
+[node name="Collision" type="CollisionShape2D" parent="."]
+shape = SubResource(1)
+
+[node name="RayFloor" type="RayCast2D" parent="."]
+enabled = true
+target_position = Vector2(0, 22)  ; было 18 — сделал подлиннее
+collide_with_areas = false
+collide_with_bodies = true
+
+[node name="Tongue" type="Node2D" parent="."]
+script = ExtResource("3")
+
+[node name="Line2D" type="Line2D" parent="Tongue"]
+width = 2.0
+default_color = Color(0.8, 1, 0.8, 1)

@@ -1,0 +1,74 @@
+[gd_scene load_steps=3 format=3 uid="uid://bb7h7sg3ibdbw"]
+
+[ext_resource type="PackedScene" path="res://scenes/Frog.tscn" id="1"]
+
+[sub_resource type="RectangleShape2D" id="1"]
+size = Vector2(800, 32)
+
+[node name="TestLevel" type="Node2D"]
+
+[node name="bottom" type="StaticBody2D" parent="."]
+position = Vector2(0, 100)
+
+[node name="Collision" type="CollisionShape2D" parent="bottom"]
+shape = SubResource("1")
+
+[node name="Visual" type="Polygon2D" parent="bottom"]
+color = Color(0.22, 0.22, 0.22, 1)
+polygon = PackedVector2Array(-400, -16, 400, -16, 400, 16, -400, 16)
+
+[node name="Frog" parent="." instance=ExtResource("1")]
+
+[node name="Camera2D" type="Camera2D" parent="Frog"]
+
+[node name="right" type="StaticBody2D" parent="."]
+position = Vector2(427, 100)
+scale = Vector2(0.08, 26.7166)
+
+[node name="Collision" type="CollisionShape2D" parent="right"]
+shape = SubResource("1")
+
+[node name="Visual" type="Polygon2D" parent="right"]
+color = Color(0.22, 0.22, 0.22, 1)
+polygon = PackedVector2Array(-400, -16, 400, -16, 400, 16, -400, 16)
+
+[node name="left" type="StaticBody2D" parent="."]
+position = Vector2(-429, 100)
+scale = Vector2(0.08, 26.7166)
+
+[node name="Collision" type="CollisionShape2D" parent="left"]
+shape = SubResource("1")
+
+[node name="Visual" type="Polygon2D" parent="left"]
+color = Color(0.22, 0.22, 0.22, 1)
+polygon = PackedVector2Array(-400, -16, 400, -16, 400, 16, -400, 16)
+
+[node name="top" type="StaticBody2D" parent="."]
+position = Vector2(-4, -311)
+
+[node name="Collision" type="CollisionShape2D" parent="top"]
+shape = SubResource("1")
+
+[node name="Visual" type="Polygon2D" parent="top"]
+color = Color(0.22, 0.22, 0.22, 1)
+polygon = PackedVector2Array(-400, -16, 400, -16, 400, 16, -400, 16)
+
+[node name="platform1" type="StaticBody2D" parent="."]
+position = Vector2(528, -135)
+
+[node name="Collision" type="CollisionShape2D" parent="platform1"]
+shape = SubResource("1")
+
+[node name="Visual" type="Polygon2D" parent="platform1"]
+color = Color(0.22, 0.22, 0.22, 1)
+polygon = PackedVector2Array(-400, -16, 400, -16, 400, 16, -400, 16)
+
+[node name="platform2" type="StaticBody2D" parent="."]
+position = Vector2(-491, -44)
+
+[node name="Collision" type="CollisionShape2D" parent="platform2"]
+shape = SubResource("1")
+
+[node name="Visual" type="Polygon2D" parent="platform2"]
+color = Color(0.22, 0.22, 0.22, 1)
+polygon = PackedVector2Array(-400, -16, 400, -16, 400, 16, -400, 16)
