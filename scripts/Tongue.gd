@@ -1,297 +1,438 @@
 extends Node2D
-# Язык лягушки с обхватом препятствий.
-# Физика: цепочка pivot-точек + DampedSpringJoint2D между всеми соседями.
-# Визуал: RopeSim (если есть узел "Rope"), иначе Line2D. Рисуется в мировых координатах.
+## Tongue that wraps around corners (multiple wrap points) and unwraps when line-of-sight returns.
+## Godot 4.x
+@export var wheel_step: float = 24.0        # пикселей за щелчок
+@export var wheel_step_fast: float = 64.0   # если зажата Shift
 
-# -------- параметры поведения --------
-@export var max_length: float = 340.0                 # дальность выстрела
-@export var reel_speed: float = 260.0                 # скорость подмотки первого сегмента
-@export var stiffness: float = 70.0                   # жёсткость пружин
-@export var damping: float = 6.0                      # затухание пружин
-@export var pull_force: float = 1200.0                # доп.тяга (импульсами) вдоль первого сегмента
-@export var break_tension: float = 220.0              # порог на разрыв
-@export_flags_2d_physics var ray_mask := 1            # слои, по которым язык «видит» препятствия
-@export var mouth_offset: Vector2 = Vector2(6, -6)    # точка выхода языка «изо рта»
+@export var max_length: float = 380.0
+@export var reel_speed: float = 320.0
+@export var stiffness: float = 90.0
+@export var damping: float = 6.0
+@export var pull_force: float = 1200.0
+@export var pivot_offset: float = 10.0
+@export var pivot_min_dist: float = 6.0
+@export var add_pivot_cooldown: float = 0.05
+@export var unwrap_hysteresis: float = 4.0
+@export_flags_2d_physics var ray_mask := 1
+@export var mouth_offset: Vector2 = Vector2(6, -6)
+@export var unwrap_hold_time: float = 0.2  # сколько времени подряд нужна прямая видимость
+var _unwrap_accum: float = 0.0             # аккумулятор времени LOS для последней точки
 
-# анти-дрожь/анти-спам поворотов
-@export var pivot_min_dist: float = 8.0               # минимальная дистанция между соседними pivot
-@export var unwrap_hysteresis: float = 6.0            # допуск при «соскальзывании» с угла
-@export var add_pivot_cooldown: float = 0.06          # минимальный интервал между вставками pivot (сек)
+@export var eat_radius: float = 22.0   # дистанция до рта, на которой убиваем врага
+@export_enum("HOOK","PULL_TO_ANCHOR","PULL_TARGET_TO_FROG") var scenario := 0
 
-# -------- ссылки на сцену --------
 var frog: RigidBody2D
-var rope: Node = null          # из RopeSim (например, VerletRope2D/Rope2D) — не обязателен
-var line: Line2D = null        # fallback-визуал — не обязателен
+var rope_renderer: Node = null
+var line: Line2D = null
 
-# -------- рабочие объекты --------
-var target_body: Node2D = null                      # RigidBody2D или StaticBody2D (якорь)
-var pivots: Array[StaticBody2D] = []                # поворотные точки на углах
-var joints: Array[DampedSpringJoint2D] = []         # пружины между точками
-var active: bool = false
-var _pivot_cd: float = 0.0
+var target_body: Node2D = null
+var target_local: Vector2 = Vector2.ZERO
+var created_anchor: Node2D = null
+
+var pivots: Array[Vector2] = []
+var active := false
+var rope_length: float = 0.0
+var _pivot_cd := 0.0
 
 
-# Рейкаст с ВКЛЮЧЁННОЙ целью: исключаем только жабу (и по желанию первый pivot),
-# чтобы ловить кромку того же коллайдера, на котором стоит якорь.
-func _raycast_including_target(from: Vector2, to: Vector2) -> Dictionary:
-	var space: PhysicsDirectSpaceState2D = get_world_2d().direct_space_state
-	var q := PhysicsRayQueryParameters2D.create(from, to)
-	var ex: Array[RID] = []
-	# исключаем только жабу (чтобы луч не «втывался» в неё)
-	if frog is CollisionObject2D:
-		ex.append((frog as CollisionObject2D).get_rid())
-	q.exclude = ex
-	q.collision_mask = ray_mask
-	return space.intersect_ray(q)
-
-# ===== API =====
-func setup(_frog: RigidBody2D, _rope: Node, _line: Line2D) -> void:
+func setup(_frog: RigidBody2D, rope_node: Node=null, fallback_line: Line2D=null) -> void:
 	frog = _frog
-	rope = _rope
-	line = _line
-
+	rope_renderer = rope_node
+	line = fallback_line
 	if line:
 		line.clear_points()
 		line.visible = false
-		line.width = 2.0
-		line.set_as_top_level(true)      # рисуем по миру
-	_rope_set_visible(false)
+	_set_renderer_visible(false)
 
-func fire(target_pos: Vector2) -> void:
-	if active:
+func fire(target_world: Vector2) -> void:
+	if frog == null:
 		return
-
-	var mouth_world: Vector2 = frog.global_position + mouth_offset
-	var to_vec: Vector2 = target_pos - mouth_world
-	if to_vec.length() > max_length:
-		to_vec = to_vec.normalized() * max_length
-
-	var hit: Dictionary = _raycast(mouth_world, mouth_world + to_vec, [frog])
+	var mouth = frog.global_position + mouth_offset
+	var vec = target_world - mouth
+	if vec.length() > max_length:
+		vec = vec.normalized() * max_length
+	var hit := _raycast(mouth, mouth + vec, [frog])
 	if hit.is_empty():
 		return
 
 	var collider: Object = hit["collider"]
-	var pos: Vector2 = hit["position"]
+	var hit_pos: Vector2 = hit["position"]
 
-	if collider is RigidBody2D:
-		target_body = collider as RigidBody2D
+	if collider is RigidBody2D or collider is StaticBody2D or collider is Node2D:
+		target_body = collider as Node2D
+		if collider is RigidBody2D or collider is StaticBody2D:
+			target_local = (target_body as Node2D).to_local(hit_pos)
+			created_anchor = null
+		else:
+			target_local = Vector2.ZERO
 	else:
-		var anchor := StaticBody2D.new()
-		anchor.global_position = pos
-		# якорь не должен мешать последующим рейкастам
-		anchor.collision_layer = 0
-		anchor.collision_mask = 0
-		get_tree().current_scene.add_child(anchor)
-		target_body = anchor
+		created_anchor = Node2D.new()
+		created_anchor.global_position = hit_pos
+		get_tree().current_scene.add_child(created_anchor)
+		target_body = created_anchor
+		target_local = Vector2.ZERO
 
 	pivots.clear()
-	_rebuild_joints()
 	active = true
 	_pivot_cd = 0.0
-	if line: line.visible = true
-	_rope_set_visible(true)
+	rope_length = (hit_pos - mouth).length()
+	if line:
+		line.visible = true
+	_set_renderer_visible(true)
 
 func release() -> void:
 	if not active:
 		return
-
-	for j in joints:
-		if is_instance_valid(j): j.queue_free()
-	joints.clear()
-
-	for p in pivots:
-		if is_instance_valid(p): p.queue_free()
-	pivots.clear()
-
-	if is_instance_valid(target_body) and target_body is StaticBody2D:
-		target_body.queue_free()
-	target_body = null
-
 	active = false
+	pivots.clear()
+	_apply_points_to_renderer([] as Array[Vector2])
 	if line:
 		line.clear_points()
 		line.visible = false
-	_rope_set_visible(false)
+	_set_renderer_visible(false)
+	if created_anchor and is_instance_valid(created_anchor):
+		created_anchor.queue_free()
+	target_body = null
+	created_anchor = null
+
+func set_scenario(new_mode:int) -> void:
+	scenario = new_mode
 
 func _physics_process(delta: float) -> void:
-	if _pivot_cd > 0.0:
-		_pivot_cd -= delta
-
-	if not active or not is_instance_valid(target_body):
+	if not active or frog == null or target_body == null:
 		return
 
-	_update_wrap_points()
+	_pivot_cd = maxf(0.0, _pivot_cd - delta)
 
-	# подмотка первого сегмента
-	if joints.size() > 0:
-		joints[0].length = max(0.0, joints[0].length - reel_speed * delta)
+	var mouth: Vector2 = frog.global_position + mouth_offset
+	var anchor: Vector2 = target_body.to_global(target_local)
 
-	# доптяжка по первому сегменту (равные и противоположные импульсы)
-	var pts: PackedVector2Array = _get_points_world()
-	if pts.size() >= 2:
-		var a: Vector2 = pts[0]
-		var b: Vector2 = pts[1]
-		var dir: Vector2 = (b - a).normalized()
-		frog.apply_central_impulse(dir * pull_force * delta)
-		if target_body is RigidBody2D:
-			(target_body as RigidBody2D).apply_central_impulse(-dir * pull_force * delta)
+	_update_wrap_points(mouth, anchor)
 
-	# разрыв при перенатяжении первого сегмента
-	if joints.size() > 0 and pts.size() >= 2:
-		var t: float = max(0.0, pts[0].distance_to(pts[1]) - joints[0].length)
-		if t > break_tension:
-			release()
-			return
-
-	# обновляем визуал(ы)
-	if line:
-		line.points = pts
-	_rope_set_polyline(pts)
-
-# ===== внутренние функции =====
-
-func _get_points_world() -> PackedVector2Array:
-	var arr: PackedVector2Array = PackedVector2Array()
-	arr.append(frog.global_position + mouth_offset)
+	var pts: Array[Vector2] = []
+	pts.append(mouth)
 	for p in pivots:
-		arr.append(p.global_position)
-	arr.append((target_body as Node2D).global_position)
-	return arr
+		pts.append(p)
+	pts.append(anchor)
+	_apply_points_to_renderer(pts)   # отрисовка и для RopeSim, и для Line2D внутри
 
-func _rebuild_joints() -> void:
-	# убираем старые
-	for j in joints:
-		if is_instance_valid(j): j.queue_free()
-	joints.clear()
 
-	# последовательность узлов: рот (жаба) → pivots → цель
-	var nodes: Array[Node2D] = []
-	nodes.append(frog)
-	for p in pivots:
-		nodes.append(p)
-	nodes.append(target_body)
+	var L := _polyline_length(pts)
+	match scenario:
+		0:
+			pass  # HOOK: длина управляется колесиком; авто-намотки нет
+		1:
+			rope_length = max(0.0, rope_length - reel_speed * delta)
+		2:
+			rope_length = max(0.0, rope_length - reel_speed * delta)
 
-	# создаём пружину на каждом соседнем отрезке
-	for i in range(nodes.size() - 1):
-		var a: Node2D = nodes[i]
-		var b: Node2D = nodes[i + 1]
-		var j: DampedSpringJoint2D = DampedSpringJoint2D.new()
-		j.node_a = (a as Node).get_path()
-		j.node_b = (b as Node).get_path()
-		j.length = a.global_position.distance_to(b.global_position)
-		j.stiffness = stiffness
-		j.damping = damping
-		get_tree().current_scene.add_child(j)
-		joints.append(j)
+	if L > rope_length:
+		var deficit := L - rope_length
+		_apply_tension_forces(pts, deficit, delta)
+		# если якорь — враг и он близко ко рту — "съесть"
+		if target_body and target_body.is_in_group("enemy"):
+			var eat_anchor: Vector2 = (target_body as Node2D).to_global(target_local)
+			var mouth_now: Vector2 = frog.global_position + mouth_offset
+			if mouth_now.distance_to(eat_anchor) <= eat_radius:
+				if target_body.has_method("kill"):
+					target_body.call_deferred("kill")
+				else:
+					target_body.queue_free()
+				release()
+				return
+
+		# если тянем врага и подтащили к рту — «съесть»
+		if scenario == 2 and target_body is RigidBody2D and target_body.is_in_group("enemy"):
+			var eat_anchor: Vector2 = (target_body as Node2D).to_global(target_local)
+			if mouth.distance_to(eat_anchor) <= eat_radius:
+				if target_body.has_method("kill"):
+					target_body.call_deferred("kill")
+				else:
+					target_body.queue_free()
+				release()
+
+
+func _update_wrap_points(mouth: Vector2, anchor: Vector2) -> void:
+	# --- добавление поворотных точек (wrap) ---
+	var guard := 0
+	while guard < 16:
+		guard += 1
+		var a: Vector2 = mouth if pivots.size() == 0 else pivots[pivots.size() - 1]
+
+		var hit := _raycast_including_target(a, anchor, [frog, target_body])
+		if hit.is_empty():
+			break  # последний отрезок чистый — новых pivot не нужно
+
+		# NB: намеренно НЕ блокируем добавление pivot по кулдауну,
+		# если пересечение всё ещё есть — иначе можно «проскочить» момент
+		var pos: Vector2 = hit["position"]
+		var n: Vector2 = (hit["normal"] as Vector2).normalized()
+		var t := Vector2(-n.y, n.x) # тангенс
+
+		var cand1 := pos + t * pivot_offset
+		var cand2 := pos - t * pivot_offset
+
+		# Сторона, с которой есть прямая видимость до anchor
+		var ok1 := _raycast_including_target(cand1, anchor, [frog, target_body]).is_empty()
+		var ok2 := _raycast_including_target(cand2, anchor, [frog, target_body]).is_empty()
+
+		var chosen := cand1
+		if ok1 and not ok2:
+			chosen = cand1
+		elif ok2 and not ok1:
+			chosen = cand2
+		else:
+			# Ни с одной стороны LOS нет — всё равно добавим pivot,
+			# берём более удалённый от 'a' (обычно внешняя сторона)
+			chosen = cand1 if a.distance_to(cand1) > a.distance_to(cand2) else cand2
+
+		# --- депенетрация pivot наружу по нормали ---
+		if true:
+			var space: PhysicsDirectSpaceState2D = get_world_2d().direct_space_state
+			var steps := 0
+			while steps < depenetrate_max_steps:
+				var pp := PhysicsPointQueryParameters2D.new()
+				pp.position = chosen
+				pp.collision_mask = ray_mask
+				pp.collide_with_bodies = true
+				pp.collide_with_areas = false
+				var inside := space.intersect_point(pp, 1).size() > 0
+				if not inside:
+					break
+				chosen += n * depenetrate_step
+				steps += 1
+
+		if pivots.size() == 0 or pivots[-1].distance_to(chosen) > pivot_min_dist:
+			pivots.append(chosen)
+			_pivot_cd = add_pivot_cooldown
+		else:
+			break
+
+	# --- удаление поворотных точек (unwrap) с временной гистерезисом ---
+	while pivots.size() > 0:
+		var prev := mouth if pivots.size() == 1 else pivots[pivots.size() - 2]
+		var test := _raycast_including_target(prev, anchor, [frog, target_body])
+
+		if test.is_empty():
+			_unwrap_accum += get_physics_process_delta_time()
+			if _unwrap_accum >= unwrap_hold_time:
+				pivots.pop_back()
+				_unwrap_accum = 0.0
+			else:
+				break  # ждём, подтвердится ли LOS на следующих кадрах
+		else:
+			_unwrap_accum = 0.0
+			var hit_pos: Vector2 = test["position"]
+			if prev.distance_to(hit_pos) < unwrap_hysteresis:
+				pivots.pop_back()
+			else:
+				break
+
+
+func _apply_tension_forces(poly: Array, deficit: float, delta: float) -> void:
+	if poly.size() < 2:
+		return
+	var a: Vector2 = poly[0]
+	var b: Vector2 = poly[1]
+	var dir: Vector2 = (b - a).normalized()
+	var impulse := dir * stiffness * deficit * delta
+	var v := frog.linear_velocity
+	var v_along := dir * v.dot(dir)
+	impulse -= v_along * damping * delta
+	frog.apply_central_impulse(impulse)
+
+	if scenario == 2 and target_body is RigidBody2D:
+		var p1: Vector2 = poly[poly.size() - 2]
+		var p2: Vector2 = poly[poly.size() - 1]
+		var tdir := (p1 - p2).normalized()
+		var imp2 := tdir * stiffness * deficit * delta
+		(target_body as RigidBody2D).apply_central_impulse(imp2)
+
+func _polyline_length(poly: Array[Vector2]) -> float:
+	var L: float = 0.0
+	for i in range(poly.size() - 1):
+		L += (poly[i + 1] - poly[i]).length()
+	return L
+
+
+@export var ray_side_eps: float = 3.0    # «толщина» верёвки для проверки (пиксели)
+@export var ray_start_eps: float = 0.5   # смещение старта луча вперёд (пиксели)
 
 func _raycast(from: Vector2, to: Vector2, exclude_nodes: Array[Node]) -> Dictionary:
 	var space: PhysicsDirectSpaceState2D = get_world_2d().direct_space_state
-	var q := PhysicsRayQueryParameters2D.create(from, to)
+	var dir := (to - from)
+	var len := dir.length()
+	if len <= 0.0001:
+		return {}
+	var nd := dir / len
+
+	# общий набор RID для исключения
 	var ex: Array[RID] = []
 	for n in exclude_nodes:
 		if n is CollisionObject2D:
 			ex.append((n as CollisionObject2D).get_rid())
-	q.exclude = ex
-	q.collision_mask = ray_mask
-	return space.intersect_ray(q)
 
-func _update_wrap_points() -> void:
-	# откуда идём: рот или первый pivot
-	var a_point: Vector2
-	if pivots.size() > 0:
-		a_point = pivots[0].global_position
-	else:
-		a_point = frog.global_position + mouth_offset
+	# соберём 3 луча: центральный и два с боковым смещением
+	var side := Vector2(-nd.y, nd.x) * ray_side_eps
+	var origins := [
+		from + nd * ray_start_eps,
+		from + nd * ray_start_eps + side,
+		from + nd * ray_start_eps - side
+	]
 
-	# куда хотим: следующий pivot или цель
-	var b_node: Node2D
-	if pivots.size() > 0:
-		if pivots.size() > 1:
-			b_node = pivots[1]
-		else:
-			b_node = target_body
-	else:
-		b_node = target_body
+	var closest := {}
+	var best_dist := INF
 
-	# если A→B перекрыт стеной → вставляем pivot в точке касания (с анти-спамом и мин.дистанцией)
-	if _pivot_cd <= 0.0:
-		# ВАЖНО: цель НЕ исключаем -> увидим первую кромку того же коллайдера
-		var hit: Dictionary = _raycast_including_target(a_point, b_node.global_position)
+	for o in origins:
+		var q := PhysicsRayQueryParameters2D.create(o, o + nd * (len - ray_start_eps))
+		q.exclude = ex
+		q.collision_mask = ray_mask
+		q.hit_from_inside = true
+		q.collide_with_areas = false
+		q.collide_with_bodies = true
+		var hit := space.intersect_ray(q)
 		if not hit.is_empty():
-			var pos: Vector2 = hit["position"]
-			# если попали практически в B (1–2 px), считаем, что препятствия нет
-			if pos.distance_to(b_node.global_position) <= 2.0:
-				pass
-			else:
-				if pivots.size() == 0 or pos.distance_to(pivots[0].global_position) >= pivot_min_dist:
-					var p := StaticBody2D.new()
-					p.global_position = pos
-					p.collision_layer = 0
-					p.collision_mask  = 0
-					get_tree().current_scene.add_child(p)
-					pivots.insert(0, p)
-					_rebuild_joints()
-					_pivot_cd = add_pivot_cooldown
-					return
+			var d := (hit["position"] as Vector2).distance_to(o)
+			if d < best_dist:
+				best_dist = d
+				closest = hit
+
+	return closest
+
+@export var end_shrink_eps: float = 2.0  # укоротить луч перед якорем, пиксели
+
+func _raycast_including_target(from: Vector2, to: Vector2, exclude_nodes: Array[Node]) -> Dictionary:
+	# как _raycast, но НЕ исключаем target_body и укорачиваем луч на end_shrink_eps
+	var space: PhysicsDirectSpaceState2D = get_world_2d().direct_space_state
+	var dir := to - from
+	var len := dir.length()
+	if len <= 0.0001:
+		return {}
+	var nd := dir / len
+	var to2 := to - nd * end_shrink_eps
+
+	# исключаем только то, что реально надо (обычно — лягушку)
+	var ex: Array[RID] = []
+	for n in exclude_nodes:
+		if n is CollisionObject2D:
+			ex.append((n as CollisionObject2D).get_rid())
+
+	# «толстый» веер из 3-х лучей
+	var side := Vector2(-nd.y, nd.x) * ray_side_eps
+	var origins := [
+		from + nd * ray_start_eps,
+		from + nd * ray_start_eps + side,
+		from + nd * ray_start_eps - side
+	]
+
+	var closest := {}
+	var best_dist := INF
+	for o in origins:
+		var q := PhysicsRayQueryParameters2D.create(o, to2)
+		q.exclude = ex
+		q.collision_mask = ray_mask
+		q.hit_from_inside = true
+		q.collide_with_bodies = true
+		q.collide_with_areas = false
+		var hit := space.intersect_ray(q)
+		if not hit.is_empty():
+			var d := (hit["position"] as Vector2).distance_to(o)
+			if d < best_dist:
+				best_dist = d
+				closest = hit
+	return closest
 
 
-	# разматывание: если путь рот→(второй узел после первого) свободен — снимаем ближний pivot
-	if pivots.size() > 0:
-		var next_after_first: Node2D
-		if pivots.size() > 1:
-			next_after_first = pivots[1]
-		else:
-			next_after_first = target_body
+func _apply_points_to_renderer(pts: Array[Vector2]) -> void:
+	# Выберем, к какому узлу приводить в локальные: RopeSim если есть, иначе Line2D
+	var ref_node: Node2D = null
+	if rope_renderer is Node2D:
+		ref_node = rope_renderer as Node2D
+	elif line is Node2D:
+		ref_node = line as Node2D
 
-		var clear: Dictionary = _raycast(frog.global_position + mouth_offset, next_after_first.global_position, [frog, next_after_first])
-		if clear.is_empty():
-			# гистерезис: удаляем pivot только если он «почти на прямой»
-			var pivot_world: Vector2 = pivots[0].global_position
-			var a_world: Vector2 = frog.global_position + mouth_offset
-			var b_world: Vector2 = next_after_first.global_position
-			if _point_to_segment_dist(pivot_world, a_world, b_world) <= unwrap_hysteresis:
-				var first: StaticBody2D = pivots.pop_front()
-				if is_instance_valid(first): first.queue_free()
-				_rebuild_joints()
+	var local_pts: Array[Vector2] = []
+	if ref_node != null:
+		for p in pts:
+			local_pts.append(ref_node.to_local(p))
+	else:
+		local_pts = pts.duplicate()
 
-# расстояние от точки P до отрезка AB — для гистерезиса
-func _point_to_segment_dist(p: Vector2, a: Vector2, b: Vector2) -> float:
-	var ab: Vector2 = b - a
-	var t: float = 0.0
-	var ab_len2: float = ab.length_squared()
-	if ab_len2 > 0.0:
-		t = clamp((p - a).dot(ab) / ab_len2, 0.0, 1.0)
-	var proj: Vector2 = a + ab * t
-	return p.distance_to(proj)
+	var packed := PackedVector2Array(local_pts)
 
-# ===== RopeSim helpers (визуал) =====
-func _rope_set_visible(v: bool) -> void:
-	if rope == null:
-		return
-	if "visible" in rope:
-		rope.visible = v
-	elif rope.has_method("set_visible"):
-		rope.call("set_visible", v)
-
-# Пытаемся прокинуть полилинию в RopeSim независимо от точного API.
-func _rope_set_polyline(pts: PackedVector2Array) -> void:
-	if rope == null:
-		return
-	# 1) Метод set_points(points)
-	if rope.has_method("set_points"):
-		rope.call("set_points", pts)
-		return
-	# 2) Свойство "points"
-	if "points" in rope:
-		rope.points = pts
-		return
-	# 3) Если узел принимает только два конца (start/end)
-	if pts.size() >= 2:
-		var a := pts[0]
-		var b := pts[pts.size() - 1]
-		if "start" in rope and "end" in rope:
-			rope.start = a; rope.end = b
+	# --- RopeSim / кастомный рендерер ---
+	if rope_renderer != null:
+		if rope_renderer.has_method("set_points"):
+			rope_renderer.call("set_points", packed)
 			return
-		if "a" in rope and "b" in rope:
-			rope.a = a; rope.b = b
+		if "points" in rope_renderer:
+			rope_renderer.points = packed
 			return
+		if local_pts.size() >= 2:
+			var a: Vector2 = local_pts[0]
+			var b: Vector2 = local_pts[local_pts.size() - 1]
+			if "start" in rope_renderer and "end" in rope_renderer:
+				rope_renderer.start = a
+				rope_renderer.end = b
+				return
+			if "a" in rope_renderer and "b" in rope_renderer:
+				rope_renderer.a = a
+				rope_renderer.b = b
+				return
+
+	# --- Fallback: Line2D ---
+	if line != null:
+		line.visible = true
+		line.clear_points()
+		for p in local_pts:
+			line.add_point(p)
+
+
+
+func _set_renderer_visible(v: bool) -> void:
+	if rope_renderer == null:
+		return
+	if "visible" in rope_renderer:
+		rope_renderer.visible = v
+
+@export var depenetrate_step: float = 1.6
+@export var depenetrate_max_steps: int = 8
+
+func _point_inside_solid(p: Vector2) -> bool:
+	var space: PhysicsDirectSpaceState2D = get_world_2d().direct_space_state
+	var params := PhysicsPointQueryParameters2D.new()
+	params.position = p
+	params.collision_mask = ray_mask
+	params.collide_with_areas = false
+	params.collide_with_bodies = true
+	var res: Array = space.intersect_point(params, 1)
+	return res.size() > 0
+
+
+
+func _push_out(point: Vector2, normal: Vector2) -> Vector2:
+	var p := point
+	var n := normal.normalized()
+	for i in range(depenetrate_max_steps):
+		if not _point_inside_solid(p):
+			return p
+		p += n * depenetrate_step
+	return p
+
+func _adjust_length(delta_len: float) -> void:
+	if not active:
+		return
+	rope_length = clamp(rope_length + delta_len, 0.0, max_length)
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not active:
+		return
+	if event is InputEventMouseButton and event.pressed:
+		var step := wheel_step
+		if event.shift_pressed:
+			step = wheel_step_fast
+		match event.button_index:
+			MOUSE_BUTTON_WHEEL_UP:
+				_adjust_length(-step)   # укоротить язык, подтянуться
+			MOUSE_BUTTON_WHEEL_DOWN:
+				_adjust_length(step)    # отпустить язык, добавить слабину

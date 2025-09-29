@@ -1,0 +1,16 @@
+[gd_scene load_steps=3 format=3 uid="uid://op0ay8dyd3dg"]
+
+[ext_resource type="Script" uid="uid://boa22ve6sisi2" path="res://scripts/Enemy.gd" id="1"]
+
+[sub_resource type="RectangleShape2D" id="1"]
+size = Vector2(28, 18)
+
+[node name="Enemy" type="RigidBody2D"]
+mass = 1.5
+script = ExtResource("1")
+
+[node name="Enemy#CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("1")
+
+[node name="Enemy#Sprite2D" type="Sprite2D" parent="."]
+modulate = Color(0.9, 0.2, 0.2, 1)

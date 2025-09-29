@@ -1,8 +1,7 @@
-[gd_scene load_steps=13 format=3 uid="uid://bb7h7sg3ibdbw"]
+[gd_scene load_steps=12 format=3 uid="uid://bb7h7sg3ibdbw"]
 
 [ext_resource type="PackedScene" uid="uid://kwirmuxv2wds" path="res://scenes/Frog.tscn" id="1"]
 [ext_resource type="PackedScene" uid="uid://op0ay8dyd3dg" path="res://scenes/Enemy.tscn" id="2"]
-[ext_resource type="PackedScene" path="res://scenes/MovingPlatform.tscn" id="3_df0lk"]
 
 [sub_resource type="RectangleShape2D" id="S_WALL_HUGE"]
 size = Vector2(1400, 32)
@@ -151,6 +150,16 @@ shape = SubResource("S_SMALL")
 color = Color(0.3, 0.9, 1, 1)
 polygon = PackedVector2Array(-80, -10, 80, -10, 80, 10, -80, 10)
 
+[node name="Small2" type="StaticBody2D" parent="Geo"]
+position = Vector2(460, 40)
+
+[node name="CS" type="CollisionShape2D" parent="Geo/Small2"]
+shape = SubResource("S_SMALL")
+
+[node name="Poly" type="Polygon2D" parent="Geo/Small2"]
+color = Color(1, 0.2, 0.2, 1)
+polygon = PackedVector2Array(-80, -10, 80, -10, 80, 10, -80, 10)
+
 [node name="Enemies" type="Node2D" parent="."]
 
 [node name="EnemyA" parent="Enemies" instance=ExtResource("2")]
@@ -164,6 +173,3 @@ patrol_half = 120.0
 [node name="EnemyC" parent="Enemies" instance=ExtResource("2")]
 position = Vector2(80, 200)
 patrol_half = 160.0
-
-[node name="MovingPlatform" parent="Enemies" instance=ExtResource("3_df0lk")]
-position = Vector2(537, 21)
