@@ -1,9 +1,8 @@
-[gd_scene load_steps=14 format=3 uid="uid://bb7h7sg3ibdbw"]
+[gd_scene load_steps=13 format=3 uid="uid://bb7h7sg3ibdbw"]
 
 [ext_resource type="PackedScene" uid="uid://kwirmuxv2wds" path="res://scenes/Frog.tscn" id="1"]
 [ext_resource type="PackedScene" uid="uid://op0ay8dyd3dg" path="res://scenes/Enemy.tscn" id="2"]
 [ext_resource type="PackedScene" path="res://scenes/MovingPlatform.tscn" id="3_df0lk"]
-[ext_resource type="PackedScene" uid="uid://cg7usi67mj50u" path="res://scenes/ui/HUD.tscn" id="4_i6x8u"]
 
 [sub_resource type="RectangleShape2D" id="S_WALL_HUGE"]
 size = Vector2(1400, 32)
@@ -168,5 +167,3 @@ patrol_half = 160.0
 
 [node name="MovingPlatform" parent="Enemies" instance=ExtResource("3_df0lk")]
 position = Vector2(537, 21)
-
-[node name="HUD" parent="." instance=ExtResource("4_i6x8u")]
