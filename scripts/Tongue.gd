@@ -58,14 +58,13 @@ func fire(target_world: Vector2) -> void:
 	var collider: Object = hit["collider"]
 	var hit_pos: Vector2 = hit["position"]
 
-	if collider is RigidBody2D or collider is StaticBody2D or collider is Node2D:
+	if collider is Node2D:
+		# ЯКОРИМСЯ В ТОЧКУ УДАРА ВНУТРИ ЛЮБОГО Node2D (в т.ч. TileMap)
 		target_body = collider as Node2D
-		if collider is RigidBody2D or collider is StaticBody2D:
-			target_local = (target_body as Node2D).to_local(hit_pos)
-			created_anchor = null
-		else:
-			target_local = Vector2.ZERO
+		target_local = (target_body as Node2D).to_local(hit_pos)
+		created_anchor = null
 	else:
+		# На всякий случай — создаём «виртуальный» якорь в мире
 		created_anchor = Node2D.new()
 		created_anchor.global_position = hit_pos
 		get_tree().current_scene.add_child(created_anchor)
@@ -159,7 +158,7 @@ func _update_wrap_points(mouth: Vector2, anchor: Vector2) -> void:
 		guard += 1
 		var a: Vector2 = mouth if pivots.size() == 0 else pivots[pivots.size() - 1]
 
-		var hit := _raycast_including_target(a, anchor, [frog, target_body])
+		var hit := _raycast_including_target(a, anchor, [frog])
 		if hit.is_empty():
 			break  # последний отрезок чистый — новых pivot не нужно
 
@@ -173,8 +172,8 @@ func _update_wrap_points(mouth: Vector2, anchor: Vector2) -> void:
 		var cand2 := pos - t * pivot_offset
 
 		# Сторона, с которой есть прямая видимость до anchor
-		var ok1 := _raycast_including_target(cand1, anchor, [frog, target_body]).is_empty()
-		var ok2 := _raycast_including_target(cand2, anchor, [frog, target_body]).is_empty()
+		var ok1 := _raycast_including_target(cand1, anchor, [frog]).is_empty()
+		var ok2 := _raycast_including_target(cand2, anchor, [frog]).is_empty()
 
 		var chosen := cand1
 		if ok1 and not ok2:
@@ -211,7 +210,7 @@ func _update_wrap_points(mouth: Vector2, anchor: Vector2) -> void:
 	# --- удаление поворотных точек (unwrap) с временной гистерезисом ---
 	while pivots.size() > 0:
 		var prev := mouth if pivots.size() == 1 else pivots[pivots.size() - 2]
-		var test := _raycast_including_target(prev, anchor, [frog, target_body])
+		var test := _raycast_including_target(prev, anchor, [frog])
 
 		if test.is_empty():
 			_unwrap_accum += get_physics_process_delta_time()
@@ -299,49 +298,47 @@ func _raycast(from: Vector2, to: Vector2, exclude_nodes: Array[Node]) -> Diction
 	return closest
 
 
-@export var end_shrink_eps: float = 2.0  # укоротить луч перед якорем, пиксели
+@export var end_shrink_eps: float = 2.0
 
 func _raycast_including_target(from: Vector2, to: Vector2, exclude_nodes: Array[Node]) -> Dictionary:
-	# как _raycast, но НЕ исключаем target_body и укорачиваем луч на end_shrink_eps
 	var space: PhysicsDirectSpaceState2D = get_world_2d().direct_space_state
-	
-	var dir := to - from
-	var seg_len := dir.length()
+	var dir: Vector2 = to - from
+	var seg_len: float = dir.length()
 	if seg_len <= 0.0001:
 		return {}
-	var nd := dir / seg_len
+	var nd: Vector2 = dir / seg_len
 
-
-	# исключаем только то, что реально надо (обычно — лягушку)
 	var ex: Array[RID] = []
 	for n in exclude_nodes:
 		if n is CollisionObject2D:
 			ex.append((n as CollisionObject2D).get_rid())
 
-	# «толстый» веер из 3-х лучей
-	var side := Vector2(-nd.y, nd.x) * ray_side_eps
-	var origins := [
+	var side: Vector2 = Vector2(-nd.y, nd.x) * ray_side_eps
+	var origins: Array[Vector2] = [
 		from + nd * ray_start_eps,
 		from + nd * ray_start_eps + side,
 		from + nd * ray_start_eps - side
 	]
 
-	var closest := {}
-	var best_dist := INF
+	var closest: Dictionary = {}
+	var best_dist: float = INF
+	var travel: float = max(0.0, seg_len - ray_start_eps - end_shrink_eps)
+
 	for o in origins:
-		var q := PhysicsRayQueryParameters2D.create(o, o + nd * (seg_len - ray_start_eps))
+		var q: PhysicsRayQueryParameters2D = PhysicsRayQueryParameters2D.create(o, o + nd * travel)
 		q.exclude = ex
 		q.collision_mask = ray_mask
 		q.hit_from_inside = true
 		q.collide_with_bodies = true
 		q.collide_with_areas = false
-		var hit := space.intersect_ray(q)
+		var hit: Dictionary = space.intersect_ray(q)
 		if not hit.is_empty():
-			var d := (hit["position"] as Vector2).distance_to(o)
+			var d: float = (hit["position"] as Vector2).distance_to(o)
 			if d < best_dist:
 				best_dist = d
 				closest = hit
 	return closest
+
 
 
 func _apply_points_to_renderer(pts: Array[Vector2]) -> void:
